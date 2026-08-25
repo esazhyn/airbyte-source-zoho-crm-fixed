@@ -35,7 +35,7 @@ def test_read_records_without_modified_time(incremental_stream: IncrementalZohoC
     with patch.object(ZohoCrmStream, "read_records", return_value=iter(records)):
         result = list(incremental_stream.read_records())
 
-    assert result == records
+    assert result == [{**records[0], "Modified_Time": None}]
     assert incremental_stream.state == initial_state
 
 

@@ -99,6 +99,9 @@ class IncrementalZohoCrmStream(ZohoCrmStream):
 
     def read_records(self, *args, **kwargs) -> Iterable[Mapping[str, Any]]:
         for record in super().read_records(*args, **kwargs):
+            if self.cursor_field not in record:
+                record = dict(record)
+                record[self.cursor_field] = None
             modified_time = record.get(self.cursor_field)
             if modified_time:
                 current_cursor_value = datetime.datetime.fromisoformat(self.state[self.cursor_field])

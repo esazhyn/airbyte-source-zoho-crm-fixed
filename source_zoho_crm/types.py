@@ -112,6 +112,8 @@ class AutoNumberDict(FromDictMixin):
 
 FieldType = Dict[Any, Any]
 
+MODIFIED_TIME_SCHEMA_PROPERTY: FieldType = {"type": ["null", "string"], "format": "date-time"}
+
 
 @dataclasses.dataclass
 class FieldMeta(FromDictMixin):
@@ -249,7 +251,8 @@ class ModuleMeta(FromDictMixin):
             raise IncompleteMetaDataException("Not enough data")
         required = ["id", "Modified_Time"] + [field_.api_name for field_ in self.fields if field_.system_mandatory]
         field_to_properties = {field_.api_name: field_.schema for field_ in self.fields}
-        properties = {"id": {"type": "string"}, "Modified_Time": {"type": "string", "format": "date-time"}, **field_to_properties}
+        properties = {"id": {"type": "string"}, **field_to_properties}
+        properties["Modified_Time"] = MODIFIED_TIME_SCHEMA_PROPERTY
         return Schema(description=self.module_name, properties=properties, required=required)
 
 
@@ -281,6 +284,6 @@ def build_deals_fallback_schema(module_name: str = "Deals") -> Schema:
         "Type": {"type": ["null", "string"]},
         "Lead_Source": {"type": ["null", "string"]},
         "Created_Time": {"type": ["null", "string"], "format": "date-time"},
-        "Modified_Time": {"type": ["null", "string"], "format": "date-time"},
+        "Modified_Time": MODIFIED_TIME_SCHEMA_PROPERTY,
     }
-    return Schema(description=module_name, properties=properties, required=["id"])
+    return Schema(description=module_name, properties=properties, required=["id", "Modified_Time"])

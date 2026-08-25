@@ -124,7 +124,7 @@ def test_deals_record_without_modified_time_still_yields() -> None:
     with patch.object(ZohoCrmStream, "read_records", return_value=iter([record])):
         result = list(stream.read_records())
 
-    assert result == [record]
+    assert result == [{**record, "Modified_Time": None}]
     assert stream.state == initial_state
 
 
