@@ -11,6 +11,15 @@ from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Union
 from .exceptions import IncompleteMetaDataException, UnknownDataTypeException
 
 
+DEALS_MODULE_API_NAMES = frozenset({"Deals", "Potentials"})
+
+
+def is_deals_module(api_name: str, module_name: str = "") -> bool:
+    if api_name in DEALS_MODULE_API_NAMES:
+        return True
+    return module_name in DEALS_MODULE_API_NAMES
+
+
 @dataclasses.dataclass
 class Schema:
     description: str
@@ -233,7 +242,7 @@ class ModuleMeta(FromDictMixin):
     @property
     def schema(self) -> Schema:
         if not self.fields:
-            if self.api_name == "Deals" and self.fields_metadata_unavailable:
+            if is_deals_module(self.api_name, self.module_name) and self.fields_metadata_unavailable:
                 return build_deals_fallback_schema(self.module_name)
             raise IncompleteMetaDataException("Not enough data")
         required = ["id", "Modified_Time"] + [field_.api_name for field_ in self.fields if field_.system_mandatory]

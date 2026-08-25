@@ -17,7 +17,7 @@ from airbyte_cdk.sources.streams.http import HttpStream
 
 from .api import ZohoAPI
 from .exceptions import IncompleteMetaDataException, UnknownDataTypeException
-from .types import FieldMeta, ModuleMeta, ZohoPickListItem
+from .types import FieldMeta, ModuleMeta, ZohoPickListItem, is_deals_module
 
 
 # 204 and 304 status codes are valid successful responses,
@@ -54,9 +54,10 @@ class ZohoCrmStream(HttpStream, ABC):
     def get_json_schema(self) -> Optional[Dict[Any, Any]]:
         try:
             schema = asdict(self.module.schema)
-            if self.module.api_name == "Deals" and self.module.fields_metadata_unavailable:
+            if is_deals_module(self.module.api_name, self.module.module_name) and self.module.fields_metadata_unavailable:
                 self.logger.warning(
-                    "Fields metadata for module api_name=Deals returned HTTP 204; enabling fallback Deals stream"
+                    "Fields metadata unavailable for module api_name=%s; enabling fallback Deals stream",
+                    self.module.api_name,
                 )
                 self.logger.info("Deals added to catalog using fallback schema")
             return schema
@@ -128,8 +129,12 @@ class ZohoStreamFactory:
         return list(filter(lambda module: module.api_supported, modules))
 
     def _populate_fields_meta(self, module: ModuleMeta):
-        logger.info("Processing module api_name=%s", module.api_name)
-        fields_meta_json, fields_metadata_unavailable = self.api.fields_settings(module.api_name)
+        logger.info(
+            "Processing module api_name=%s module_name=%s",
+            module.api_name,
+            module.module_name,
+        )
+        fields_meta_json, fields_metadata_unavailable, http_status = self.api.fields_settings(module.api_name)
         module.fields_metadata_unavailable = fields_metadata_unavailable
         fields_meta = []
         for field in fields_meta_json:
@@ -138,10 +143,26 @@ class ZohoStreamFactory:
                 field["pick_list_values"] = [ZohoPickListItem.from_dict(pick_list_item) for pick_list_item in pick_list_values]
             fields_meta.append(FieldMeta.from_dict(field))
         module.fields = fields_meta
+        logger.info(
+            "Module metadata populated api_name=%s module_name=%s http_status=%s fields_count=%s metadata_unavailable=%s",
+            module.api_name,
+            module.module_name,
+            http_status,
+            len(fields_meta),
+            fields_metadata_unavailable,
+        )
 
     def _populate_module_meta(self, module: ModuleMeta):
         module_meta_json = self.api.module_settings(module.api_name)
-        module.update_from_dict(next(iter(module_meta_json), None))
+        module_meta = next(iter(module_meta_json), None)
+        if module_meta:
+            module.update_from_dict(module_meta)
+        else:
+            logger.warning(
+                "Module metadata unavailable for api_name=%s module_name=%s; continuing with modules list metadata",
+                module.api_name,
+                module.module_name,
+            )
 
     def produce(self) -> List[HttpStream]:
         modules = self._init_modules_meta()
@@ -158,7 +179,7 @@ class ZohoStreamFactory:
         max_concurrent_request = self.api.max_concurrent_requests
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent_request) as executor:
             for batch in chunk(max_concurrent_request, modules):
-                executor.map(lambda module: populate_module(module), batch)
+                list(executor.map(lambda module: populate_module(module), batch))
 
         bases = (IncrementalZohoCrmStream,)
         for module in modules:
@@ -166,6 +187,34 @@ class ZohoStreamFactory:
             stream_cls_name = f"Incremental{module.api_name}ZohoCRMStream"
             incremental_stream_cls = type(stream_cls_name, bases, stream_cls_attrs)
             stream = incremental_stream_cls(self.api.authenticator, config=self._config)
-            if stream.get_json_schema():
+            schema = stream.get_json_schema()
+            stream_created = schema is not None
+            fields_count = len(list(module.fields or []))
+            fallback_schema_used = stream_created and module.fields_metadata_unavailable and fields_count == 0
+
+            logger.info(
+                "DISCOVER module api_name=%s module_name=%s fields_count=%s metadata_unavailable=%s "
+                "schema_created=%s stream_created=%s",
+                module.api_name,
+                module.module_name,
+                fields_count,
+                module.fields_metadata_unavailable,
+                schema is not None,
+                stream_created,
+            )
+
+            if is_deals_module(module.api_name, module.module_name):
+                logger.info(
+                    "REAL DEALS DEBUG: api_name=%s module_name=%s fields_count=%s metadata_unavailable=%s "
+                    "fallback_schema_used=%s stream_created=%s",
+                    module.api_name,
+                    module.module_name,
+                    fields_count,
+                    module.fields_metadata_unavailable,
+                    fallback_schema_used,
+                    stream_created,
+                )
+
+            if schema:
                 streams.append(stream)
         return streams

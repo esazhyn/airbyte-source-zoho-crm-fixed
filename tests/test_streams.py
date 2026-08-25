@@ -1,19 +1,6 @@
-import sys
-import types as types_module
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
-project_root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(project_root))
-
-pkg = types_module.ModuleType("source_zoho_crm")
-pkg.__path__ = [str(project_root / "source_zoho_crm")]
-sys.modules["source_zoho_crm"] = pkg
-sys.modules["source_zoho_crm.types"] = MagicMock()
-sys.modules["source_zoho_crm.api"] = MagicMock()
-sys.modules["source_zoho_crm.exceptions"] = MagicMock()
 
 from source_zoho_crm.streams import IncrementalZohoCrmStream, ZohoCrmStream
 

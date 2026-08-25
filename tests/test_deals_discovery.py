@@ -48,8 +48,8 @@ def test_deals_in_catalog_when_fields_metadata_204() -> None:
 
     def fields_side_effect(module_name: str):
         if module_name == "Deals":
-            return [], True
-        return [CONTACTS_FIELD], False
+            return [], True, 204
+        return [CONTACTS_FIELD], False, 200
 
     api.fields_settings.side_effect = fields_side_effect
 
@@ -161,3 +161,71 @@ def test_existing_streams_not_broken_when_deals_uses_fallback() -> None:
     invoices_stream = invoices_stream_cls(authenticator=None, config=CONFIG)
 
     assert invoices_stream.get_json_schema() is None
+
+
+def test_deals_in_catalog_when_fields_metadata_200_empty_array() -> None:
+    api = MagicMock()
+    api.api_url = "https://www.zohoapis.eu"
+    api.max_concurrent_requests = 5
+    api.authenticator = MagicMock()
+    api.modules_settings.return_value = [
+        {"api_name": "Deals", "module_name": "Deals", "api_supported": True},
+        {"api_name": "Contacts", "module_name": "Contacts", "api_supported": True},
+    ]
+    api.module_settings.return_value = [{}]
+
+    def fields_side_effect(module_name: str):
+        if module_name == "Deals":
+            return [], True, 200
+        return [CONTACTS_FIELD], False, 200
+
+    api.fields_settings.side_effect = fields_side_effect
+
+    streams = _build_factory_with_api(api).produce()
+    stream_names = [stream.module.api_name for stream in streams]
+
+    assert "Deals" in stream_names
+    deals_stream = next(stream for stream in streams if stream.module.api_name == "Deals")
+    assert deals_stream.module.fields_metadata_unavailable is True
+    assert deals_stream.get_json_schema() is not None
+
+
+def test_deals_in_catalog_when_module_settings_empty_but_fields_204() -> None:
+    api = MagicMock()
+    api.api_url = "https://www.zohoapis.eu"
+    api.max_concurrent_requests = 5
+    api.authenticator = MagicMock()
+    api.modules_settings.return_value = [
+        {"api_name": "Deals", "module_name": "Deals", "api_supported": True},
+    ]
+    api.module_settings.return_value = []
+
+    def fields_side_effect(module_name: str):
+        return [], True, 204
+
+    api.fields_settings.side_effect = fields_side_effect
+
+    streams = _build_factory_with_api(api).produce()
+
+    assert [stream.module.api_name for stream in streams] == ["Deals"]
+
+
+def test_deals_fallback_via_api_fields_settings_200_empty() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from source_zoho_crm.api import ZohoAPI
+
+    api = ZohoAPI(CONFIG)
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"fields": []}
+    response.raise_for_status = MagicMock()
+
+    with patch.object(api.authenticator, "get_auth_header", return_value={"Authorization": "Bearer test"}):
+        with patch("source_zoho_crm.api.requests.get", return_value=response):
+            fields, metadata_unavailable, http_status = api.fields_settings("Deals")
+
+    assert http_status == 200
+    assert fields == []
+    assert metadata_unavailable is True
+
