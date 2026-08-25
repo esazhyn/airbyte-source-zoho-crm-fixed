@@ -82,8 +82,23 @@ class ZohoAPI:
     def modules_settings(self) -> List[MutableMapping[Any, Any]]:
         return self._json_from_path("/crm/v2/settings/modules", key="modules")
 
-    def fields_settings(self, module_name: str) -> List[MutableMapping[Any, Any]]:
-        return self._json_from_path("/crm/v2/settings/fields", key="fields", params={"module": module_name})
+    def fields_settings(self, module_name: str) -> Tuple[List[MutableMapping[Any, Any]], bool]:
+        logger.info("Requesting fields metadata for module api_name=%s", module_name)
+        response = requests.get(
+            url=f"{self.api_url}/crm/v2/settings/fields",
+            headers=self.authenticator.get_auth_header(),
+            params={"module": module_name},
+        )
+        if response.status_code == 204:
+            logger.warning(
+                "Fields Metadata inaccessible for module api_name=%s: %s [HTTP status %s]",
+                module_name,
+                response.content,
+                response.status_code,
+            )
+            return [], True
+        response.raise_for_status()
+        return response.json()["fields"], False
 
     def check_connection(self) -> Tuple[bool, Any]:
         path = "/crm/v2/settings/modules"

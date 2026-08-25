@@ -114,7 +114,7 @@ class FieldMeta(FromDictMixin):
     system_mandatory: bool
     display_label: str
     pick_list_values: Optional[List[ZohoPickListItem]]
-    auto_number: Optional[AutoNumberDict] = AutoNumberDict(prefix="", suffix="")
+    auto_number: Optional[AutoNumberDict] = dataclasses.field(default_factory=lambda: AutoNumberDict(prefix="", suffix=""))
 
     def _default_type_kwargs(self) -> Dict[str, str]:
         return {"title": self.display_label}
@@ -228,12 +228,48 @@ class ModuleMeta(FromDictMixin):
     module_name: str
     api_supported: bool
     fields: Optional[Iterable[FieldMeta]] = dataclasses.field(default_factory=list)
+    fields_metadata_unavailable: bool = False
 
     @property
     def schema(self) -> Schema:
         if not self.fields:
+            if self.api_name == "Deals" and self.fields_metadata_unavailable:
+                return build_deals_fallback_schema(self.module_name)
             raise IncompleteMetaDataException("Not enough data")
         required = ["id", "Modified_Time"] + [field_.api_name for field_ in self.fields if field_.system_mandatory]
         field_to_properties = {field_.api_name: field_.schema for field_ in self.fields}
         properties = {"id": {"type": "string"}, "Modified_Time": {"type": "string", "format": "date-time"}, **field_to_properties}
         return Schema(description=self.module_name, properties=properties, required=required)
+
+
+def _lookup_property(*, include_email: bool = False) -> FieldType:
+    properties: Dict[str, Any] = {"name": {"type": ["null", "string"]}, "id": {"type": "string"}}
+    required = ["name", "id"]
+    if include_email:
+        properties["email"] = {"type": "string", "format": "email"}
+        required.append("email")
+    return {
+        "type": ["null", "object"],
+        "additionalProperties": True,
+        "required": required,
+        "properties": properties,
+    }
+
+
+def build_deals_fallback_schema(module_name: str = "Deals") -> Schema:
+    properties: Dict[str, Any] = {
+        "id": {"type": "string"},
+        "Deal_Name": {"type": ["null", "string"]},
+        "Stage": {"type": ["null", "string"]},
+        "Pipeline": {"type": ["null", "string"]},
+        "Owner": _lookup_property(include_email=True),
+        "Contact_Name": _lookup_property(),
+        "Account_Name": _lookup_property(),
+        "Amount": {"type": ["null", "number"]},
+        "Closing_Date": {"type": ["null", "string"], "format": "date"},
+        "Type": {"type": ["null", "string"]},
+        "Lead_Source": {"type": ["null", "string"]},
+        "Created_Time": {"type": ["null", "string"], "format": "date-time"},
+        "Modified_Time": {"type": ["null", "string"], "format": "date-time"},
+    }
+    return Schema(description=module_name, properties=properties, required=["id"])

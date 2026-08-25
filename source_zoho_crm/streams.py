@@ -4,6 +4,7 @@
 
 import concurrent.futures
 import datetime
+import logging
 import math
 from abc import ABC
 from dataclasses import asdict
@@ -22,6 +23,8 @@ from .types import FieldMeta, ModuleMeta, ZohoPickListItem
 # 204 and 304 status codes are valid successful responses,
 # but `.json()` will fail because the response body is empty
 EMPTY_BODY_STATUSES = (HTTPStatus.NO_CONTENT, HTTPStatus.NOT_MODIFIED)
+
+logger = logging.getLogger(__name__)
 
 
 class ZohoCrmStream(HttpStream, ABC):
@@ -50,7 +53,13 @@ class ZohoCrmStream(HttpStream, ABC):
 
     def get_json_schema(self) -> Optional[Dict[Any, Any]]:
         try:
-            return asdict(self.module.schema)
+            schema = asdict(self.module.schema)
+            if self.module.api_name == "Deals" and self.module.fields_metadata_unavailable:
+                self.logger.warning(
+                    "Fields metadata for module api_name=Deals returned HTTP 204; enabling fallback Deals stream"
+                )
+                self.logger.info("Deals added to catalog using fallback schema")
+            return schema
         except IncompleteMetaDataException:
             # to build a schema for a stream, a sequence of requests is made:
             # one `/settings/modules` which introduces a list of modules,
@@ -59,7 +68,8 @@ class ZohoCrmStream(HttpStream, ABC):
             # Any of former two can result in 204 and empty body what blocks us
             # from generating stream schema and, therefore, a stream.
             self.logger.warning(
-                f"Could not retrieve fields Metadata for module {self.module.api_name}. " f"This stream will not be available for syncs."
+                f"Could not retrieve fields Metadata for module {self.module.api_name}. "
+                f"This stream will not be available for syncs."
             )
             return None
         except UnknownDataTypeException as exc:
@@ -118,12 +128,14 @@ class ZohoStreamFactory:
         return list(filter(lambda module: module.api_supported, modules))
 
     def _populate_fields_meta(self, module: ModuleMeta):
-        fields_meta_json = self.api.fields_settings(module.api_name)
+        logger.info("Processing module api_name=%s", module.api_name)
+        fields_meta_json, fields_metadata_unavailable = self.api.fields_settings(module.api_name)
+        module.fields_metadata_unavailable = fields_metadata_unavailable
         fields_meta = []
         for field in fields_meta_json:
             pick_list_values = field.get("pick_list_values", [])
             if pick_list_values:
-                field["pick_list_values"] = [ZohoPickListItem.from_dict(pick_list_item) for pick_list_item in field["pick_list_values"]]
+                field["pick_list_values"] = [ZohoPickListItem.from_dict(pick_list_item) for pick_list_item in pick_list_values]
             fields_meta.append(FieldMeta.from_dict(field))
         module.fields = fields_meta
 
