@@ -116,13 +116,13 @@ FieldType = Dict[Any, Any]
 @dataclasses.dataclass
 class FieldMeta(FromDictMixin):
     json_type: str
-    length: Optional[int]
     api_name: str
     data_type: str
     decimal_place: Optional[int]
     system_mandatory: bool
     display_label: str
     pick_list_values: Optional[List[ZohoPickListItem]]
+    length: Optional[int] = None
     auto_number: Optional[AutoNumberDict] = dataclasses.field(default_factory=lambda: AutoNumberDict(prefix="", suffix=""))
 
     def _default_type_kwargs(self) -> Dict[str, str]:
@@ -152,7 +152,9 @@ class FieldMeta(FromDictMixin):
             # actual values do not correspond to the values in the list
             return {"type": ["null", "string"], "format": "date-time", **self._default_type_kwargs()}
 
-        typedef = {"type": ["null", "string"], "maxLength": self.length, **self._default_type_kwargs()}
+        typedef = {"type": ["null", "string"], **self._default_type_kwargs()}
+        if self.length is not None:
+            typedef["maxLength"] = self.length
         if self.data_type == ZohoDataType.website:
             typedef["format"] = "uri"
         elif self.data_type == ZohoDataType.email:

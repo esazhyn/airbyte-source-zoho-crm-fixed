@@ -138,6 +138,14 @@ class ZohoStreamFactory:
         module.fields_metadata_unavailable = fields_metadata_unavailable
         fields_meta = []
         for field in fields_meta_json:
+            if "length" not in field:
+                logger.info(
+                    "Field metadata missing length for module api_name=%s field api_name=%s data_type=%s display_label=%s",
+                    module.api_name,
+                    field.get("api_name"),
+                    field.get("data_type"),
+                    field.get("display_label"),
+                )
             pick_list_values = field.get("pick_list_values", [])
             if pick_list_values:
                 field["pick_list_values"] = [ZohoPickListItem.from_dict(pick_list_item) for pick_list_item in pick_list_values]
