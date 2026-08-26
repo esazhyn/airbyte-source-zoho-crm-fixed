@@ -150,6 +150,8 @@ MODIFIED_TIME_SCHEMA_PROPERTY: FieldType = {"type": ["null", "string"], "format"
 DELETED_TIME_SCHEMA_PROPERTY: FieldType = {"type": ["null", "string"], "format": "date-time"}
 
 ZOHO_RECORDS_MAX_FIELDS_PER_REQUEST = 50
+ZOHO_V8_RECORDS_PER_PAGE = 200
+ZOHO_V8_MAX_PAGE_NUMBER = 10
 
 DEALS_MANDATORY_RECORD_FIELDS = (
     "id",

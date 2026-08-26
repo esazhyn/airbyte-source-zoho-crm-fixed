@@ -12,8 +12,10 @@ from http import HTTPStatus
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
 
 import requests
+from requests.exceptions import HTTPError
 
 from airbyte_cdk.sources.streams.http import HttpStream
+from airbyte_cdk.sources.streams.http.availability_strategy import HttpAvailabilityStrategy
 
 from .api import ZohoAPI
 from .deleted_streams import DeletedZohoCrmStream
@@ -24,6 +26,8 @@ from .types import (
     ModuleMeta,
     ZohoPickListItem,
     ZOHO_RECORDS_MAX_FIELDS_PER_REQUEST,
+    ZOHO_V8_MAX_PAGE_NUMBER,
+    ZOHO_V8_RECORDS_PER_PAGE,
     build_record_field_batches,
     collect_module_record_field_names,
     is_deals_module,
@@ -38,10 +42,35 @@ EMPTY_BODY_STATUSES = (HTTPStatus.NO_CONTENT, HTTPStatus.NOT_MODIFIED)
 logger = logging.getLogger(__name__)
 
 
+class DealsAvailabilityStrategy(HttpAvailabilityStrategy):
+    """Lightweight availability probe for Deals — one page=1 request, no full sync."""
+
+    def check_availability(self, stream, logger: logging.Logger, source=None):
+        if not isinstance(stream, ZohoCrmStream) or not is_deals_module(stream.module.api_name, stream.module.module_name):
+            return super().check_availability(stream, logger, source)
+
+        try:
+            stream._reset_pagination_state()
+            stream._active_field_batch = ["id"]
+            stream_state = stream.state if hasattr(stream, "state") else {}
+            stream._fetch_next_page(stream_state=stream_state)
+            return True, None
+        except HTTPError as error:
+            is_available, reason = self.handle_http_error(stream, logger, source, error)
+            if not is_available:
+                reason = f"Unable to read {stream.name} stream. {reason}"
+            return is_available, reason
+        finally:
+            stream._active_field_batch = None
+            stream._reset_pagination_state()
+
+
 class ZohoCrmStream(HttpStream, ABC):
     primary_key: str = "id"
     module: ModuleMeta = None
     _active_field_batch: Optional[List[str]] = None
+    _active_field_batch_index: Optional[int] = None
+    _pagination_uses_page_token: bool = False
 
     def _collect_record_field_names(self) -> List[str]:
         return collect_module_record_field_names(self.module)
@@ -66,6 +95,15 @@ class ZohoCrmStream(HttpStream, ABC):
             return f"/crm/v8/{self.module.api_name}"
         return f"/crm/v2/{self.module.api_name}"
 
+    def _reset_pagination_state(self) -> None:
+        self._pagination_uses_page_token = False
+
+    @property
+    def availability_strategy(self):
+        if is_deals_module(self.module.api_name, self.module.module_name):
+            return DealsAvailabilityStrategy()
+        return HttpAvailabilityStrategy()
+
     def _log_deals_fields_batch(self, batch_index: int, field_batch: List[str]) -> None:
         if is_deals_module(self.module.api_name, self.module.module_name):
             logger.info(
@@ -74,6 +112,32 @@ class ZohoCrmStream(HttpStream, ABC):
                 "Pipeline" in field_batch,
             )
 
+    def _log_deals_pagination(
+        self,
+        *,
+        mode: str,
+        page: Optional[int] = None,
+        more_records: Optional[bool] = None,
+        next_page_token_present: Optional[bool] = None,
+    ) -> None:
+        if not is_deals_module(self.module.api_name, self.module.module_name):
+            return
+        batch_number = (self._active_field_batch_index or 0) + 1
+        logger.info(
+            "Deals pagination: field_batch=%s mode=%s page=%s more_records=%s next_page_token_present=%s",
+            batch_number,
+            mode,
+            page,
+            more_records,
+            next_page_token_present,
+        )
+
+    def _log_deals_pagination_switch_to_page_token(self) -> None:
+        if not is_deals_module(self.module.api_name, self.module.module_name):
+            return
+        batch_number = (self._active_field_batch_index or 0) + 1
+        logger.info("Deals pagination switching to page_token: field_batch=%s", batch_number)
+
     def read_records(self, *args, **kwargs) -> Iterable[Mapping[str, Any]]:
         batches = self._field_request_batches()
         if not batches:
@@ -81,17 +145,29 @@ class ZohoCrmStream(HttpStream, ABC):
             return
 
         if len(batches) == 1:
+            self._active_field_batch_index = 0
             self._active_field_batch = batches[0]
+            self._reset_pagination_state()
             self._log_deals_fields_batch(0, batches[0])
             try:
                 yield from super().read_records(*args, **kwargs)
             finally:
                 self._active_field_batch = None
+                self._active_field_batch_index = None
+                self._reset_pagination_state()
             return
 
         merged: Dict[str, MutableMapping[str, Any]] = {}
         for batch_index, field_batch in enumerate(batches):
+            if is_deals_module(self.module.api_name, self.module.module_name):
+                logger.info(
+                    "Deals starting field batch %s/%s; pagination reset",
+                    batch_index + 1,
+                    len(batches),
+                )
+            self._active_field_batch_index = batch_index
             self._active_field_batch = field_batch
+            self._reset_pagination_state()
             self._log_deals_fields_batch(batch_index, field_batch)
             try:
                 for record in super().read_records(*args, **kwargs):
@@ -105,6 +181,8 @@ class ZohoCrmStream(HttpStream, ABC):
                         merged[record_id].update(record)
             finally:
                 self._active_field_batch = None
+                self._active_field_batch_index = None
+                self._reset_pagination_state()
         for record in merged.values():
             yield record
 
@@ -114,16 +192,61 @@ class ZohoCrmStream(HttpStream, ABC):
         pagination = response.json()["info"]
         if not pagination["more_records"]:
             return None
-        return {"page": pagination["page"] + 1}
+
+        if not self._requires_explicit_fields():
+            return {"page": pagination["page"] + 1}
+
+        current_page = pagination.get("page")
+        next_token = pagination.get("next_page_token")
+        token_present = bool(next_token)
+
+        if self._pagination_uses_page_token:
+            self._log_deals_pagination(
+                mode="page_token",
+                page=current_page,
+                more_records=True,
+                next_page_token_present=token_present,
+            )
+            if next_token:
+                return {"page_token": next_token}
+            return None
+
+        self._log_deals_pagination(
+            mode="page",
+            page=current_page,
+            more_records=True,
+            next_page_token_present=token_present,
+        )
+
+        if current_page is not None and current_page < ZOHO_V8_MAX_PAGE_NUMBER:
+            return {"page": current_page + 1}
+
+        if next_token:
+            self._log_deals_pagination_switch_to_page_token()
+            return {"page_token": next_token}
+
+        return None
 
     def request_params(
         self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, any] = None, next_page_token: Mapping[str, Any] = None
     ) -> MutableMapping[str, Any]:
         params = dict(next_page_token or {})
-        if "page" not in params:
+
+        if self._requires_explicit_fields():
+            params["per_page"] = ZOHO_V8_RECORDS_PER_PAGE
+            if self._active_field_batch:
+                params["fields"] = ",".join(self._active_field_batch)
+
+            if "page_token" in params:
+                params.pop("page", None)
+                self._pagination_uses_page_token = True
+            elif "page" in params:
+                self._pagination_uses_page_token = False
+            elif not self._pagination_uses_page_token:
+                params["page"] = 1
+        elif "page" not in params:
             params["page"] = 1
-        if self._active_field_batch:
-            params["fields"] = ",".join(self._active_field_batch)
+
         return params
 
     def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:

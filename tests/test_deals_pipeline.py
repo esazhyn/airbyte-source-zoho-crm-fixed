@@ -69,6 +69,7 @@ def test_deals_request_params_include_pipeline_in_fields() -> None:
     assert "fields" in params
     assert "Pipeline" in params["fields"].split(",")
     assert params["page"] == 1
+    assert params["per_page"] == 200
 
 
 def test_pipeline_survives_batching_over_50_fields() -> None:
