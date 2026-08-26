@@ -18,7 +18,17 @@ from airbyte_cdk.sources.streams.http import HttpStream
 from .api import ZohoAPI
 from .deleted_streams import DeletedZohoCrmStream
 from .exceptions import IncompleteMetaDataException, UnknownDataTypeException
-from .types import FieldMeta, ModuleMeta, ZohoPickListItem, is_deals_module, is_deleted_stream_candidate
+from .types import (
+    DEALS_MANDATORY_RECORD_FIELDS,
+    FieldMeta,
+    ModuleMeta,
+    ZohoPickListItem,
+    ZOHO_RECORDS_MAX_FIELDS_PER_REQUEST,
+    build_record_field_batches,
+    collect_module_record_field_names,
+    is_deals_module,
+    is_deleted_stream_candidate,
+)
 
 
 # 204 and 304 status codes are valid successful responses,
@@ -31,6 +41,72 @@ logger = logging.getLogger(__name__)
 class ZohoCrmStream(HttpStream, ABC):
     primary_key: str = "id"
     module: ModuleMeta = None
+    _active_field_batch: Optional[List[str]] = None
+
+    def _collect_record_field_names(self) -> List[str]:
+        return collect_module_record_field_names(self.module)
+
+    def _requires_explicit_fields(self) -> bool:
+        if is_deals_module(self.module.api_name, self.module.module_name):
+            return True
+        return len(self._collect_record_field_names()) > ZOHO_RECORDS_MAX_FIELDS_PER_REQUEST
+
+    def _field_request_batches(self) -> List[List[str]]:
+        if not self._requires_explicit_fields():
+            return []
+        mandatory = (
+            DEALS_MANDATORY_RECORD_FIELDS
+            if is_deals_module(self.module.api_name, self.module.module_name)
+            else ("id", "Modified_Time")
+        )
+        return build_record_field_batches(self._collect_record_field_names(), mandatory)
+
+    def _records_api_path(self) -> str:
+        if self._requires_explicit_fields():
+            return f"/crm/v8/{self.module.api_name}"
+        return f"/crm/v2/{self.module.api_name}"
+
+    def _log_deals_fields_batch(self, batch_index: int, field_batch: List[str]) -> None:
+        if is_deals_module(self.module.api_name, self.module.module_name):
+            logger.info(
+                "Deals request fields batch %s contains Pipeline=%s",
+                batch_index + 1,
+                "Pipeline" in field_batch,
+            )
+
+    def read_records(self, *args, **kwargs) -> Iterable[Mapping[str, Any]]:
+        batches = self._field_request_batches()
+        if not batches:
+            yield from super().read_records(*args, **kwargs)
+            return
+
+        if len(batches) == 1:
+            self._active_field_batch = batches[0]
+            self._log_deals_fields_batch(0, batches[0])
+            try:
+                yield from super().read_records(*args, **kwargs)
+            finally:
+                self._active_field_batch = None
+            return
+
+        merged: Dict[str, MutableMapping[str, Any]] = {}
+        for batch_index, field_batch in enumerate(batches):
+            self._active_field_batch = field_batch
+            self._log_deals_fields_batch(batch_index, field_batch)
+            try:
+                for record in super().read_records(*args, **kwargs):
+                    record_id = record.get("id")
+                    if record_id is None:
+                        yield record
+                        continue
+                    if record_id not in merged:
+                        merged[record_id] = dict(record)
+                    else:
+                        merged[record_id].update(record)
+            finally:
+                self._active_field_batch = None
+        for record in merged.values():
+            yield record
 
     def next_page_token(self, response: requests.Response) -> Optional[Mapping[str, Any]]:
         if response.status_code in EMPTY_BODY_STATUSES:
@@ -43,14 +119,19 @@ class ZohoCrmStream(HttpStream, ABC):
     def request_params(
         self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, any] = None, next_page_token: Mapping[str, Any] = None
     ) -> MutableMapping[str, Any]:
-        return next_page_token or {}
+        params = dict(next_page_token or {})
+        if "page" not in params:
+            params["page"] = 1
+        if self._active_field_batch:
+            params["fields"] = ",".join(self._active_field_batch)
+        return params
 
     def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:
         data = [] if response.status_code in EMPTY_BODY_STATUSES else response.json()["data"]
         yield from data
 
     def path(self, *args, **kwargs) -> str:
-        return f"/crm/v2/{self.module.api_name}"
+        return self._records_api_path()
 
     def get_json_schema(self) -> Optional[Dict[Any, Any]]:
         try:

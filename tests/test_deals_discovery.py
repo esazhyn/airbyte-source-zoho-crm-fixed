@@ -68,7 +68,13 @@ def test_deals_in_catalog_when_fields_metadata_204() -> None:
     assert "Stage" in schema["properties"]
     assert "Pipeline" in schema["properties"]
     assert "Owner" in schema["properties"]
-    assert deals_stream.path() == "/crm/v2/Deals"
+    assert deals_stream.path() == "/crm/v8/Deals"
+    batches = deals_stream._field_request_batches()
+    assert batches
+    assert any("Pipeline" in batch for batch in batches)
+    deals_stream._active_field_batch = batches[0]
+    params = deals_stream.request_params({})
+    assert "Pipeline" in params["fields"].split(",")
 
 
 def test_deals_record_read_with_critical_fields() -> None:

@@ -149,6 +149,18 @@ FieldType = Dict[Any, Any]
 MODIFIED_TIME_SCHEMA_PROPERTY: FieldType = {"type": ["null", "string"], "format": "date-time"}
 DELETED_TIME_SCHEMA_PROPERTY: FieldType = {"type": ["null", "string"], "format": "date-time"}
 
+ZOHO_RECORDS_MAX_FIELDS_PER_REQUEST = 50
+
+DEALS_MANDATORY_RECORD_FIELDS = (
+    "id",
+    "Deal_Name",
+    "Stage",
+    "Pipeline",
+    "Owner",
+    "Created_Time",
+    "Modified_Time",
+)
+
 
 @dataclasses.dataclass
 class FieldMeta(FromDictMixin):
@@ -288,6 +300,8 @@ class ModuleMeta(FromDictMixin):
         field_to_properties = {field_.api_name: field_.schema for field_ in self.fields}
         properties = {"id": {"type": "string"}, **field_to_properties}
         properties["Modified_Time"] = MODIFIED_TIME_SCHEMA_PROPERTY
+        if is_deals_module(self.api_name, self.module_name):
+            properties.update(_deals_mandatory_schema_properties())
         return Schema(description=self.module_name, properties=properties, required=required)
 
 
@@ -305,23 +319,73 @@ def _lookup_property(*, include_email: bool = False) -> FieldType:
     }
 
 
-def build_deals_fallback_schema(module_name: str = "Deals") -> Schema:
-    properties: Dict[str, Any] = {
-        "id": {"type": "string"},
+def _deals_mandatory_schema_properties() -> Dict[str, Any]:
+    return {
         "Deal_Name": {"type": ["null", "string"]},
         "Stage": {"type": ["null", "string"]},
         "Pipeline": {"type": ["null", "string"]},
         "Owner": _lookup_property(include_email=True),
+        "Created_Time": {"type": ["null", "string"], "format": "date-time"},
+    }
+
+
+def build_deals_fallback_schema(module_name: str = "Deals") -> Schema:
+    properties: Dict[str, Any] = {
+        "id": {"type": "string"},
+        **_deals_mandatory_schema_properties(),
         "Contact_Name": _lookup_property(),
         "Account_Name": _lookup_property(),
         "Amount": {"type": ["null", "number"]},
         "Closing_Date": {"type": ["null", "string"], "format": "date"},
         "Type": {"type": ["null", "string"]},
         "Lead_Source": {"type": ["null", "string"]},
-        "Created_Time": {"type": ["null", "string"], "format": "date-time"},
         "Modified_Time": MODIFIED_TIME_SCHEMA_PROPERTY,
     }
-    return Schema(description=module_name, properties=properties, required=["id", "Modified_Time"])
+    return Schema(
+        description=module_name,
+        properties=properties,
+        required=["id", "Deal_Name", "Stage", "Pipeline", "Owner", "Created_Time", "Modified_Time"],
+    )
+
+
+def collect_module_record_field_names(module: "ModuleMeta") -> List[str]:
+    names: List[str] = ["id", "Modified_Time"]
+    if module.fields:
+        for field in module.fields:
+            names.append(field.api_name)
+    if is_deals_module(module.api_name, module.module_name):
+        names.extend(DEALS_MANDATORY_RECORD_FIELDS)
+    return list(dict.fromkeys(names))
+
+
+def build_record_field_batches(
+    field_names: List[str],
+    mandatory_fields: Iterable[str],
+    max_fields: int = ZOHO_RECORDS_MAX_FIELDS_PER_REQUEST,
+) -> List[List[str]]:
+    mandatory = list(dict.fromkeys(mandatory_fields))
+    unique = list(dict.fromkeys(field_names))
+    for name in mandatory:
+        if name not in unique:
+            unique.insert(0, name)
+
+    if len(unique) <= max_fields:
+        return [unique]
+
+    batches: List[List[str]] = []
+    first_batch = list(dict.fromkeys(mandatory))
+    for name in unique:
+        if name not in first_batch and len(first_batch) < max_fields:
+            first_batch.append(name)
+    batches.append(first_batch)
+
+    used = set(first_batch)
+    remaining = [name for name in unique if name not in used]
+    chunk_size = max_fields - 1
+    for offset in range(0, len(remaining), chunk_size):
+        batch = ["id"] + remaining[offset : offset + chunk_size]
+        batches.append(batch)
+    return batches
 
 
 def is_custom_module_api_name(api_name: str) -> bool:
