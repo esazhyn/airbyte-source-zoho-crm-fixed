@@ -29,6 +29,7 @@ CONTACTS_FIELD = {
 
 
 def _build_factory_with_api(api: MagicMock) -> ZohoStreamFactory:
+    api.supports_deleted_records.return_value = False
     factory = ZohoStreamFactory.__new__(ZohoStreamFactory)
     factory._config = CONFIG
     factory.api = api

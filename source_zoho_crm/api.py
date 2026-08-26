@@ -126,3 +126,27 @@ class ZohoAPI:
         except requests.exceptions.HTTPError as exc:
             return False, exc.response.content
         return True, None
+
+    def supports_deleted_records(self, module_api_name: str) -> bool:
+        response = requests.get(
+            url=f"{self.api_url}/crm/v8/{module_api_name}/deleted",
+            headers=self.authenticator.get_auth_header(),
+            params={"type": "all", "page": 1, "per_page": 1},
+        )
+        if response.status_code in (200, 204):
+            logger.info("Deleted records API supported for module api_name=%s [HTTP status %s]", module_api_name, response.status_code)
+            return True
+        if response.status_code == 400:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            if payload.get("code") == "INVALID_MODULE" or "INVALID_MODULE" in str(payload):
+                logger.warning(
+                    "Deleted records API unsupported for module api_name=%s: %s",
+                    module_api_name,
+                    payload,
+                )
+                return False
+        response.raise_for_status()
+        return False

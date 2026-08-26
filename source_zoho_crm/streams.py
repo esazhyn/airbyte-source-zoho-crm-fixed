@@ -16,8 +16,9 @@ import requests
 from airbyte_cdk.sources.streams.http import HttpStream
 
 from .api import ZohoAPI
+from .deleted_streams import DeletedZohoCrmStream
 from .exceptions import IncompleteMetaDataException, UnknownDataTypeException
-from .types import FieldMeta, ModuleMeta, ZohoPickListItem, is_deals_module
+from .types import FieldMeta, ModuleMeta, ZohoPickListItem, is_deals_module, is_deleted_stream_candidate
 
 
 # 204 and 304 status codes are valid successful responses,
@@ -228,4 +229,29 @@ class ZohoStreamFactory:
 
             if schema:
                 streams.append(stream)
+
+        streams.extend(self._produce_deleted_streams(modules))
         return streams
+
+    def _produce_deleted_streams(self, modules: List[ModuleMeta]) -> List[HttpStream]:
+        deleted_streams: List[HttpStream] = []
+        for module in modules:
+            if not is_deleted_stream_candidate(module.api_name):
+                continue
+            if not self.api.supports_deleted_records(module.api_name):
+                continue
+
+            stream_cls_name = f"IncrementalDeleted{module.api_name}ZohoCRMStream"
+            deleted_stream_cls = type(
+                stream_cls_name,
+                (DeletedZohoCrmStream,),
+                {"url_base": self.api.api_url, "module": module},
+            )
+            stream = deleted_stream_cls(self.api.authenticator, config=self._config)
+            logger.info(
+                "Deleted stream added: module_api_name=%s stream=%s",
+                module.api_name,
+                stream.name,
+            )
+            deleted_streams.append(stream)
+        return deleted_streams

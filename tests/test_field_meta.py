@@ -92,6 +92,7 @@ def test_module_schema_with_mixed_length_fields() -> None:
 
 
 def _build_factory_with_api(api: MagicMock) -> ZohoStreamFactory:
+    api.supports_deleted_records.return_value = False
     factory = ZohoStreamFactory.__new__(ZohoStreamFactory)
     factory._config = CONFIG
     factory.api = api
@@ -112,10 +113,12 @@ def test_factory_produce_with_field_missing_length() -> None:
         False,
         200,
     )
+    api.supports_deleted_records.return_value = False
 
     streams = _build_factory_with_api(api).produce()
 
-    assert len(streams) == 1
+    regular_streams = [stream for stream in streams if "deleted" not in stream.name]
+    assert len(regular_streams) == 1
     assert streams[0].module.api_name == "Contacts"
     assert streams[0].get_json_schema() is not None
 

@@ -13,6 +13,40 @@ from .exceptions import IncompleteMetaDataException, UnknownDataTypeException
 
 DEALS_MODULE_API_NAMES = frozenset({"Deals", "Potentials"})
 
+DELETED_RECORDS_SUPPORTED_API_NAMES = frozenset(
+    {
+        "Leads",
+        "Accounts",
+        "Contacts",
+        "Deals",
+        "Potentials",
+        "Campaigns",
+        "Tasks",
+        "Cases",
+        "Events",
+        "Calls",
+        "Solutions",
+        "Products",
+        "Vendors",
+        "Price_Books",
+        "Quotes",
+        "Sales_Orders",
+        "Purchase_Orders",
+        "Invoices",
+        "Appointments",
+        "Services",
+        "Activities",
+    }
+)
+
+DELETED_RECORDS_UNSUPPORTED_API_NAMES = frozenset(
+    {
+        "Attachments",
+        "Notes",
+        "Emails",
+    }
+)
+
 
 def is_deals_module(api_name: str, module_name: str = "") -> bool:
     if api_name in DEALS_MODULE_API_NAMES:
@@ -113,6 +147,7 @@ class AutoNumberDict(FromDictMixin):
 FieldType = Dict[Any, Any]
 
 MODIFIED_TIME_SCHEMA_PROPERTY: FieldType = {"type": ["null", "string"], "format": "date-time"}
+DELETED_TIME_SCHEMA_PROPERTY: FieldType = {"type": ["null", "string"], "format": "date-time"}
 
 
 @dataclasses.dataclass
@@ -287,3 +322,43 @@ def build_deals_fallback_schema(module_name: str = "Deals") -> Schema:
         "Modified_Time": MODIFIED_TIME_SCHEMA_PROPERTY,
     }
     return Schema(description=module_name, properties=properties, required=["id", "Modified_Time"])
+
+
+def is_custom_module_api_name(api_name: str) -> bool:
+    return api_name.endswith("__s") or api_name.endswith("__c")
+
+
+def is_deleted_stream_candidate(api_name: str) -> bool:
+    if api_name in DELETED_RECORDS_UNSUPPORTED_API_NAMES:
+        return False
+    if api_name in DELETED_RECORDS_SUPPORTED_API_NAMES:
+        return True
+    return is_custom_module_api_name(api_name)
+
+
+def _deleted_user_property() -> FieldType:
+    return {
+        "type": ["null", "object"],
+        "additionalProperties": True,
+        "properties": {
+            "id": {"type": "string"},
+            "name": {"type": ["null", "string"]},
+            "email": {"type": ["null", "string"], "format": "email"},
+        },
+    }
+
+
+def build_deleted_record_schema(module_api_name: str) -> Schema:
+    return Schema(
+        description=f"Deleted records for {module_api_name}",
+        properties={
+            "id": {"type": "string"},
+            "deleted_time": DELETED_TIME_SCHEMA_PROPERTY,
+            "deleted_by": _deleted_user_property(),
+            "created_by": _deleted_user_property(),
+            "display_name": {"type": ["null", "string"]},
+            "type": {"type": ["null", "string"]},
+            "module_api_name": {"type": "string"},
+        },
+        required=["id", "module_api_name"],
+    )

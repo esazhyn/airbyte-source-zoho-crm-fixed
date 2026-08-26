@@ -145,6 +145,7 @@ def test_deals_fallback_discovery_still_works() -> None:
     factory = ZohoStreamFactory.__new__(ZohoStreamFactory)
     factory._config = CONFIG
     factory.api = api
+    api.supports_deleted_records.return_value = False
 
     streams = factory.produce()
 
