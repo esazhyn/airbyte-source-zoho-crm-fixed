@@ -75,7 +75,38 @@ class ZohoAPI:
             # Zoho CRM returns `No content` for Metadata of some modules
             logger.warning(f"{key.capitalize()} Metadata inaccessible: {response.content} [HTTP status {response.status_code}]")
             return []
-        return response.json()[key]
+        # Some Zoho CRM modules are listed globally but their individual
+        # metadata endpoint omits the expected key (sometimes with an error
+        # object). The stream factory can continue using the global listing.
+        # Do not swallow errors on the GLOBAL module listing or other APIs.
+        module_detail = key == "modules" and path.startswith("/crm/v2/settings/modules/")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            response.raise_for_status()
+            raise ValueError(f"Invalid JSON in Zoho CRM metadata response for {path}") from exc
+
+        if module_detail and response.status_code == 400 and isinstance(payload, dict) and payload.get("code") == "INVALID_MODULE":
+            logger.warning("Individual module metadata unavailable for %s: HTTP 400 INVALID_MODULE; using module-list metadata", path)
+            return []
+
+        response.raise_for_status()
+        if not isinstance(payload, dict):
+            raise ValueError(f"Unexpected Zoho CRM metadata response type for {path}: {type(payload).__name__}")
+
+        if key not in payload:
+            if module_detail:
+                logger.warning(
+                    "Individual module metadata missing '%s' for %s: HTTP %s, code=%s; using module-list metadata",
+                    key, path, response.status_code, payload.get("code", "unknown"),
+                )
+                return []
+            raise ValueError(f"Zoho CRM metadata response for {path} missing required key '{key}'")
+
+        result = payload[key]
+        if not isinstance(result, list):
+            raise ValueError(f"Zoho CRM metadata response for {path} has non-list '{key}' value")
+        return result
 
     def module_settings(self, module_name: str) -> List[MutableMapping[Any, Any]]:
         return self._json_from_path(f"/crm/v2/settings/modules/{module_name}", key="modules")
